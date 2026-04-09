@@ -3,6 +3,7 @@ import {Pressable, StyleSheet, Switch, Text, View} from 'react-native';
 import {useTheme} from '@/hooks/useTheme';
 import {useStore} from '@/store';
 import {ScreenContainer} from '@/components/layout/ScreenContainer';
+import type {InteractionMode} from '@/types';
 
 interface SettingsRowProps {
   title: string;
@@ -35,6 +36,15 @@ export function SettingsScreen() {
   const toggleDarkMode = useStore(state => state.toggleDarkMode);
   const logout = useStore(state => state.logout);
   const user = useStore(state => state.user);
+  const preferredInteractionMode = useStore(state => state.preferredInteractionMode);
+  const setPreferredInteractionMode = useStore(state => state.setPreferredInteractionMode);
+
+  const isAutoVAD = preferredInteractionMode === 'auto_vad';
+
+  const handleToggleTalkMode = useCallback(() => {
+    const newMode: InteractionMode = isAutoVAD ? 'push_to_talk' : 'auto_vad';
+    setPreferredInteractionMode(newMode);
+  }, [isAutoVAD, setPreferredInteractionMode]);
 
   const handleLogout = useCallback(() => {
     logout();
@@ -82,6 +92,23 @@ export function SettingsScreen() {
                   true: theme.colors.primaryLight,
                 }}
                 thumbColor={isDarkMode ? theme.colors.primary : '#f4f4f4'}
+              />
+            }
+          />
+          <SettingsRow
+            title="Talk Mode"
+            subtitle={
+              isAutoVAD ? 'Auto (AI detects when child stops)' : 'Push to talk (Hold button)'
+            }
+            right={
+              <Switch
+                value={isAutoVAD}
+                onValueChange={handleToggleTalkMode}
+                trackColor={{
+                  false: theme.colors.border,
+                  true: theme.colors.primaryLight,
+                }}
+                thumbColor={isAutoVAD ? theme.colors.primary : '#f4f4f4'}
               />
             }
           />

@@ -20,6 +20,7 @@ export type {
 
 export type {
   AIConnectionState,
+  AIPhase,
   ConversationRole,
   ConversationMessage,
   AISessionConfig,

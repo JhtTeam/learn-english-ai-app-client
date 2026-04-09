@@ -1,5 +1,7 @@
 export type AIConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
+export type AIPhase = 'idle' | 'listening' | 'thinking' | 'speaking';
+
 export type ConversationRole = 'user' | 'assistant' | 'system';
 
 export interface ConversationMessage {

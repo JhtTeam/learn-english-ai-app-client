@@ -26,10 +26,7 @@ function HomeStackNavigator() {
       <HomeStack.Screen
         name="Conversation"
         component={ConversationScreen}
-        options={({route}) => ({
-          title: route.params?.topic ?? 'Conversation',
-          headerBackTitle: 'Back',
-        })}
+        options={{headerShown: false}}
       />
     </HomeStack.Navigator>
   );

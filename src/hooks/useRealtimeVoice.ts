@@ -28,6 +28,7 @@ export function useRealtimeVoice() {
   const addMessage = useStore(s => s.addMessage);
   const setStreamingTranscript = useStore(s => s.setStreamingTranscript);
   const setInteractionMode = useStore(s => s.setInteractionMode);
+  const setAIPhase = useStore(s => s.setAIPhase);
   const connectionState = useStore(s => s.connectionState);
   const interactionMode = useStore(s => s.interactionMode);
 
@@ -68,6 +69,18 @@ export function useRealtimeVoice() {
     );
 
     unsubs.push(
+      realtimeAIClient.onAISpeakingStart(() => {
+        setAIPhase('speaking');
+      }),
+    );
+
+    unsubs.push(
+      realtimeAIClient.onAISpeakingEnd(() => {
+        setAIPhase('idle');
+      }),
+    );
+
+    unsubs.push(
       realtimeAIClient.onError(error => {
         logger.error(TAG, 'AI client error', error);
       }),
@@ -78,7 +91,7 @@ export function useRealtimeVoice() {
     return () => {
       unsubs.forEach(fn => fn());
     };
-  }, [setConnectionState, addMessage, setStreamingTranscript]);
+  }, [setConnectionState, addMessage, setStreamingTranscript, setAIPhase]);
 
   // Wire up VAD listeners
   useEffect(() => {
@@ -129,17 +142,20 @@ export function useRealtimeVoice() {
     setIsTalking(false);
     setAudioEnergy(0);
     setVADState('inactive');
-  }, [setIsTalking, setAudioEnergy, setVADState]);
+    setAIPhase('idle');
+  }, [setIsTalking, setAudioEnergy, setVADState, setAIPhase]);
 
   const startTalking = useCallback(() => {
     setIsTalking(true);
+    setAIPhase('listening');
     realtimeAIClient.startTalking();
-  }, [setIsTalking]);
+  }, [setIsTalking, setAIPhase]);
 
   const stopTalking = useCallback(() => {
     setIsTalking(false);
+    setAIPhase('thinking');
     realtimeAIClient.stopTalking();
-  }, [setIsTalking]);
+  }, [setIsTalking, setAIPhase]);
 
   const toggleListening = useCallback(() => {
     // For auto_vad mode: toggle the mic on/off

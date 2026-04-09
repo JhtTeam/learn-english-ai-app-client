@@ -1,6 +1,7 @@
 import type {StateCreator} from 'zustand';
 import type {
   AIConnectionState,
+  AIPhase,
   AudioState,
   ConversationMessage,
   InteractionMode,
@@ -19,6 +20,7 @@ export interface ConversationSlice {
   audioEnergy: number;
   vadState: VADState;
   streamingTranscript: string;
+  aiPhase: AIPhase;
 
   // Actions
   addMessage: (message: ConversationMessage) => void;
@@ -31,6 +33,7 @@ export interface ConversationSlice {
   setAudioEnergy: (energy: number) => void;
   setVADState: (state: VADState) => void;
   setStreamingTranscript: (transcript: string) => void;
+  setAIPhase: (phase: AIPhase) => void;
 }
 
 export const createConversationSlice: StateCreator<ConversationSlice> = set => ({
@@ -43,6 +46,7 @@ export const createConversationSlice: StateCreator<ConversationSlice> = set => (
   audioEnergy: 0,
   vadState: 'inactive',
   streamingTranscript: '',
+  aiPhase: 'idle',
 
   addMessage: (message: ConversationMessage) =>
     set(state => ({messages: [...state.messages, message]})),
@@ -55,4 +59,5 @@ export const createConversationSlice: StateCreator<ConversationSlice> = set => (
   setAudioEnergy: (audioEnergy: number) => set({audioEnergy}),
   setVADState: (vadState: VADState) => set({vadState}),
   setStreamingTranscript: (streamingTranscript: string) => set({streamingTranscript}),
+  setAIPhase: (aiPhase: AIPhase) => set({aiPhase}),
 });

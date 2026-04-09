@@ -18,6 +18,7 @@ type TranscriptCallback = (transcript: string, isFinal: boolean) => void;
 type StateCallback = (state: AIConnectionState) => void;
 type ErrorCallback = (error: Error) => void;
 type RemoteStreamCallback = (stream: MediaStream) => void;
+type VoidCallback = () => void;
 
 /**
  * Client for OpenAI Realtime API (ChatGPT voice-to-voice).
@@ -46,6 +47,9 @@ export class RealtimeAIClient implements IRealtimeAIClient {
   private stateListeners: Set<StateCallback> = new Set();
   private errorListeners: Set<ErrorCallback> = new Set();
   private remoteStreamListeners: Set<RemoteStreamCallback> = new Set();
+  private speakingStartListeners: Set<VoidCallback> = new Set();
+  private speakingEndListeners: Set<VoidCallback> = new Set();
+  private isResponding: boolean = false;
 
   async connect(config?: Partial<AISessionConfig>): Promise<void> {
     if (this.state === 'connected' || this.state === 'connecting') {
@@ -275,6 +279,16 @@ export class RealtimeAIClient implements IRealtimeAIClient {
     return () => this.remoteStreamListeners.delete(callback);
   }
 
+  onAISpeakingStart(callback: VoidCallback): () => void {
+    this.speakingStartListeners.add(callback);
+    return () => this.speakingStartListeners.delete(callback);
+  }
+
+  onAISpeakingEnd(callback: VoidCallback): () => void {
+    this.speakingEndListeners.add(callback);
+    return () => this.speakingEndListeners.delete(callback);
+  }
+
   getState(): AIConnectionState {
     return this.state;
   }
@@ -336,6 +350,10 @@ export class RealtimeAIClient implements IRealtimeAIClient {
         break;
 
       case 'response.audio.delta':
+        if (!this.isResponding) {
+          this.isResponding = true;
+          this.speakingStartListeners.forEach(cb => cb());
+        }
         this.audioDeltaListeners.forEach(cb => cb(event.delta as string));
         break;
 
@@ -359,6 +377,10 @@ export class RealtimeAIClient implements IRealtimeAIClient {
         break;
 
       case 'response.done': {
+        if (this.isResponding) {
+          this.isResponding = false;
+          this.speakingEndListeners.forEach(cb => cb());
+        }
         const response = event.response as Record<string, unknown>;
         const output = (response?.output as Array<Record<string, unknown>>)?.[0];
         if (output) {

@@ -15,7 +15,7 @@ interface Props {
   active: boolean;
   /** Color override for bars */
   color?: string;
-  size?: 'small' | 'medium' | 'large';
+  size?: 'small' | 'medium' | 'large' | 'xlarge';
 }
 
 /**
@@ -32,7 +32,7 @@ export const AudioVisualizer = memo<Props>(({energy, active, color, size = 'medi
     Array.from({length: BAR_COUNT}, () => new Animated.Value(MIN_HEIGHT)),
   ).current;
 
-  const scale = size === 'small' ? 0.6 : size === 'large' ? 1.4 : 1;
+  const scale = size === 'small' ? 0.6 : size === 'large' ? 1.4 : size === 'xlarge' ? 2.0 : 1;
   const barColor = color ?? theme.colors.primary;
 
   useEffect(() => {

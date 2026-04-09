@@ -18,13 +18,13 @@ export type MainTabParamList = {
 
 export type HomeStackParamList = {
   Home: undefined;
-  Conversation: {lessonId?: string; topic?: string};
+  Conversation: {lessonId?: string; topic?: string; topicEmoji?: string};
 };
 
 export type LessonStackParamList = {
   Lessons: undefined;
   LessonDetail: {lessonId: string};
-  Conversation: {lessonId: string; topic: string};
+  Conversation: {lessonId: string; topic: string; topicEmoji?: string};
 };
 
 declare global {

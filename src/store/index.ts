@@ -22,6 +22,7 @@ export const useStore = create<AppStore>()(
         isDarkMode: state.isDarkMode,
         isOnboarded: state.isOnboarded,
         language: state.language,
+        preferredInteractionMode: state.preferredInteractionMode,
         user: state.user,
         isAuthenticated: state.isAuthenticated,
       }),
@@ -36,7 +37,9 @@ export const useAppSettings = () =>
     useShallow(state => ({
       isDarkMode: state.isDarkMode,
       language: state.language,
+      preferredInteractionMode: state.preferredInteractionMode,
       toggleDarkMode: state.toggleDarkMode,
+      setPreferredInteractionMode: state.setPreferredInteractionMode,
     })),
   );
 
@@ -63,6 +66,7 @@ export const useConversation = () =>
       audioEnergy: state.audioEnergy,
       vadState: state.vadState,
       streamingTranscript: state.streamingTranscript,
+      aiPhase: state.aiPhase,
       addMessage: state.addMessage,
       clearMessages: state.clearMessages,
       setAudioState: state.setAudioState,
@@ -72,5 +76,6 @@ export const useConversation = () =>
       setAudioEnergy: state.setAudioEnergy,
       setVADState: state.setVADState,
       setStreamingTranscript: state.setStreamingTranscript,
+      setAIPhase: state.setAIPhase,
     })),
   );
