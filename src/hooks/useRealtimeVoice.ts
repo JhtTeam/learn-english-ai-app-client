@@ -1,4 +1,6 @@
 import {useCallback, useEffect, useRef} from 'react';
+import {Platform} from 'react-native';
+import InCallManager from 'react-native-incall-manager';
 import {useStore} from '@/store';
 import {realtimeAIClient} from '@/services/ai/RealtimeAIClient';
 import {audioPlayerService} from '@/services/audio/AudioPlayerService';
@@ -131,6 +133,10 @@ export function useRealtimeVoice() {
       return;
     }
 
+    // Route audio to loudspeaker (not earpiece) — critical for Android
+    InCallManager.start({media: 'audio'});
+    InCallManager.setForceSpeakerphoneOn(true);
+
     await realtimeAIClient.connect(config);
     vadService.start();
   }, []);
@@ -139,6 +145,8 @@ export function useRealtimeVoice() {
     realtimeAIClient.disconnect();
     audioPlayerService.stop();
     vadService.stop();
+    InCallManager.setForceSpeakerphoneOn(false);
+    InCallManager.stop();
     setIsTalking(false);
     setAudioEnergy(0);
     setVADState('inactive');
