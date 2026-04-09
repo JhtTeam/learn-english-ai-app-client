@@ -33,6 +33,10 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>LearnEng needs microphone access for voice conversations with AI.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>LearnEng may use the camera for future features.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string></string>
 	<key>RCTNewArchEnabled</key>

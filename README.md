@@ -115,6 +115,12 @@ npm run format
 
 # Chạy tests
 npm test
+
+# Xem log React Native trên thiết bị Android
+npx react-native log-android
+
+# Hoặc dùng adb logcat với filter
+adb -s <DEVICE_ID> logcat *:S ReactNative:V ReactNativeJS:V
 ```
 
 ## Tính năng

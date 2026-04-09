@@ -1,5 +1,7 @@
 export type AudioState = 'idle' | 'recording' | 'playing' | 'paused' | 'error';
 
+export type InteractionMode = 'push_to_talk' | 'auto_vad';
+
 export interface AudioRecorderConfig {
   sampleRate: number;
   channels: 1 | 2;
@@ -11,6 +13,13 @@ export interface AudioChunk {
   data: string; // base64 encoded
   timestamp: number;
   duration: number;
+}
+
+/** Raw PCM frame for VAD / visualization processing */
+export interface AudioFrame {
+  pcmData: Int16Array;
+  sampleRate: number;
+  timestamp: number;
 }
 
 export interface RecorderEvents {
@@ -25,7 +34,23 @@ export interface IAudioRecorderService {
   pause(): void;
   resume(): void;
   getState(): AudioState;
+  /** Get the MediaStream for WebRTC (when using react-native-webrtc) */
+  getMediaStream(): MediaStream | null;
   onAudioData(callback: (chunk: AudioChunk) => void): () => void;
+  /** Raw PCM frames for VAD / visualization */
+  onAudioFrame(callback: (frame: AudioFrame) => void): () => void;
+  onStateChange(callback: (state: AudioState) => void): () => void;
+  dispose(): void;
+}
+
+export interface IAudioPlayerService {
+  /** Play base64-encoded PCM audio */
+  playChunk(audioData: string): void;
+  /** Play from a MediaStream (WebRTC remote track) */
+  attachStream(stream: MediaStream): void;
+  stop(): void;
+  setVolume(volume: number): void;
+  getState(): AudioState;
   onStateChange(callback: (state: AudioState) => void): () => void;
   dispose(): void;
 }
