@@ -18,8 +18,6 @@ export interface AISessionConfig {
   instructions: string;
   temperature: number;
   maxTokens: number;
-  inputAudioFormat: 'pcm16' | 'g711_ulaw' | 'g711_alaw';
-  outputAudioFormat: 'pcm16' | 'g711_ulaw' | 'g711_alaw';
 }
 
 export interface RealtimeEvent {
@@ -43,8 +41,8 @@ export interface IRealtimeAIClient {
 }
 
 export const DEFAULT_AI_SESSION_CONFIG: AISessionConfig = {
-  model: 'gpt-4o-realtime-preview',
-  voice: 'alloy',
+  model: 'gemini-2.5-flash-native-audio-latest',
+  voice: 'Puck',
   instructions:
     'You are a friendly English teacher for young Vietnamese children (ages 3-5). ' +
     'The child may speak Vietnamese, English, or mix both — that is normal and okay. ' +
@@ -58,6 +56,4 @@ export const DEFAULT_AI_SESSION_CONFIG: AISessionConfig = {
     'Make it fun — use animal sounds, counting games, and repetition.',
   temperature: 0.7,
   maxTokens: 256,
-  inputAudioFormat: 'pcm16',
-  outputAudioFormat: 'pcm16',
 };

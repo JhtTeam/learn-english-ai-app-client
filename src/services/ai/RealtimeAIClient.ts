@@ -1,4 +1,4 @@
-import {RTCPeerConnection, mediaDevices, MediaStream} from 'react-native-webrtc';
+import LiveAudioStream from 'react-native-live-audio-stream';
 import {logger} from '@/utils/logger';
 import {ENV} from '@/config/env';
 import type {
@@ -17,39 +17,37 @@ type AudioDeltaCallback = (audioDelta: string) => void;
 type TranscriptCallback = (transcript: string, isFinal: boolean) => void;
 type StateCallback = (state: AIConnectionState) => void;
 type ErrorCallback = (error: Error) => void;
-type RemoteStreamCallback = (stream: MediaStream) => void;
 type VoidCallback = () => void;
 
 /**
- * Client for OpenAI Realtime API (ChatGPT voice-to-voice).
+ * Client for Google Gemini Multimodal Live API (voice-to-voice).
  *
  * Architecture:
- *   Mic → getUserMedia → MediaStream → RTCPeerConnection → OpenAI
- *   OpenAI → Remote Audio Track → Device Speaker (automatic)
- *   OpenAI → DataChannel → JSON events (transcripts, messages)
+ *   Mic → react-native-live-audio-stream → PCM base64 → WebSocket → Gemini
+ *   Gemini → WebSocket → PCM base64 → AudioPlayerService → Speaker
+ *   Gemini → WebSocket → JSON events (transcripts, turn state)
  *
- * The audio path is fully WebRTC — no manual base64 encoding of audio.
- * The DataChannel carries structured events for transcription,
- * turn detection, and session management.
+ * Uses plain WebSocket for bidirectional audio streaming.
+ * Audio capture via react-native-live-audio-stream (raw PCM).
+ * Audio playback delegated to AudioPlayerService via onAudioDelta callbacks.
  */
 export class RealtimeAIClient implements IRealtimeAIClient {
   private state: AIConnectionState = 'disconnected';
   private config: AISessionConfig = DEFAULT_AI_SESSION_CONFIG;
   private interactionMode: InteractionMode = 'push_to_talk';
-  private pc: RTCPeerConnection | null = null;
-  private dc: any = null;
-  private localStream: MediaStream | null = null;
-  private remoteStream: MediaStream | null = null;
+  private ws: WebSocket | null = null;
+  private isStreaming = false;
+  private isResponding = false;
+  private currentTranscript = '';
+  private audioInitialized = false;
 
   private messageListeners: Set<MessageCallback> = new Set();
   private audioDeltaListeners: Set<AudioDeltaCallback> = new Set();
   private transcriptListeners: Set<TranscriptCallback> = new Set();
   private stateListeners: Set<StateCallback> = new Set();
   private errorListeners: Set<ErrorCallback> = new Set();
-  private remoteStreamListeners: Set<RemoteStreamCallback> = new Set();
   private speakingStartListeners: Set<VoidCallback> = new Set();
   private speakingEndListeners: Set<VoidCallback> = new Set();
-  private isResponding: boolean = false;
 
   async connect(config?: Partial<AISessionConfig>): Promise<void> {
     if (this.state === 'connected' || this.state === 'connecting') {
@@ -61,108 +59,99 @@ export class RealtimeAIClient implements IRealtimeAIClient {
     this.setState('connecting');
 
     try {
-      // Validate API key before proceeding
-      logger.info(
-        TAG,
-        `API key loaded: ${
-          ENV.OPENAI_API_KEY
-            ? 'yes (' + ENV.OPENAI_API_KEY.substring(0, 10) + '...)'
-            : 'NO - MISSING'
-        }`,
-      );
-      logger.info(TAG, `Realtime URL: ${ENV.OPENAI_REALTIME_URL}`);
-
-      if (!ENV.OPENAI_API_KEY) {
+      if (!ENV.GEMINI_API_KEY) {
         throw new Error(
-          'OPENAI_API_KEY is not configured. Check .env file and rebuild the app (react-native-config requires a native rebuild after .env changes).',
+          'GEMINI_API_KEY is not configured. Get your free API key at https://aistudio.google.com/apikey and add it to your .env file.',
         );
       }
 
-      // Step 1: Acquire local microphone stream
-      logger.info(TAG, 'Acquiring microphone stream');
-      this.localStream = (await mediaDevices.getUserMedia({
-        audio: true,
-      })) as unknown as MediaStream;
+      logger.info(TAG, 'Connecting to Gemini Live API');
+      logger.info(TAG, `Model: ${this.config.model}, Voice: ${this.config.voice}`);
 
-      // Step 2: Create peer connection
-      logger.info(TAG, 'Creating WebRTC peer connection');
-      this.pc = new RTCPeerConnection({
-        iceServers: [{urls: 'stun:stun.l.google.com:19302'}],
+      // Initialize audio capture (only once)
+      this.initAudioCapture();
+
+      // Connect WebSocket to Gemini
+      const url = `${ENV.GEMINI_REALTIME_URL}?key=${ENV.GEMINI_API_KEY}`;
+
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          if (this.state === 'connecting') {
+            reject(new Error('Connection timeout (15s)'));
+            this.cleanup();
+          }
+        }, 15000);
+
+        this.ws = new WebSocket(url);
+
+        this.ws.onopen = () => {
+          logger.info(TAG, 'WebSocket connected, sending setup');
+          this.sendSetup();
+        };
+
+        this.ws.onmessage = (event: WebSocketMessageEvent) => {
+          try {
+            // Gemini sends audio as binary WebSocket frames — decode to string first
+            let raw: string;
+            if (typeof event.data === 'string') {
+              raw = event.data;
+            } else if (event.data instanceof ArrayBuffer) {
+              const bytes = new Uint8Array(event.data);
+              let decoded = '';
+              for (let i = 0; i < bytes.length; i++) {
+                decoded += String.fromCharCode(bytes[i]);
+              }
+              raw = decoded;
+            } else {
+              // Unknown binary type (Blob, etc.) — skip
+              return;
+            }
+            const data = JSON.parse(raw);
+
+            // Handle setup completion — resolve the connect promise
+            if (data.setupComplete !== undefined) {
+              clearTimeout(timeout);
+              logger.info(TAG, 'Gemini session ready');
+              this.setState('connected');
+
+              // Auto-start streaming in auto_vad mode
+              if (this.interactionMode === 'auto_vad') {
+                this.startStreaming();
+              }
+
+              resolve();
+              return;
+            }
+
+            this.handleServerEvent(data);
+          } catch (error) {
+            logger.error(TAG, 'Failed to parse server event', error);
+          }
+        };
+
+        this.ws.onerror = () => {
+          clearTimeout(timeout);
+          const err = new Error('WebSocket connection error');
+          logger.error(TAG, 'WebSocket error', err);
+          this.errorListeners.forEach(cb => cb(err));
+          if (this.state === 'connecting') {
+            reject(err);
+          }
+        };
+
+        this.ws.onclose = (event: WebSocketCloseEvent) => {
+          clearTimeout(timeout);
+          logger.info(TAG, `WebSocket closed (code: ${event.code})`);
+          if (this.state === 'connecting') {
+            reject(new Error(`WebSocket closed during setup (code: ${event.code})`));
+          }
+          this.stopStreaming();
+          this.ws = null;
+          if (this.state !== 'disconnected') {
+            this.setState('disconnected');
+          }
+        };
       });
-
-      // Step 3: Add local audio track to peer connection
-      const tracks = this.localStream.getTracks();
-      for (const track of tracks) {
-        this.pc.addTrack(track as any, this.localStream as any);
-      }
-
-      // Initially mute for push-to-talk mode
-      if (this.interactionMode === 'push_to_talk') {
-        this.muteLocalAudio();
-      }
-
-      // Step 4: Handle remote audio track (AI speaking)
-      (this.pc as any).ontrack = (event: any) => {
-        logger.info(TAG, 'Received remote audio track');
-        if (event.streams && event.streams[0]) {
-          this.remoteStream = event.streams[0];
-          this.remoteStreamListeners.forEach(cb => cb(this.remoteStream!));
-        }
-      };
-
-      // Step 5: Handle ICE candidates
-      (this.pc as any).onicecandidate = (event: any) => {
-        if (event.candidate) {
-          logger.debug(TAG, 'ICE candidate gathered');
-        }
-      };
-
-      (this.pc as any).oniceconnectionstatechange = () => {
-        const iceState = (this.pc as any)?.iceConnectionState;
-        logger.info(TAG, `ICE state: ${iceState}`);
-        if (iceState === 'failed') {
-          this.handleConnectionFailure();
-        }
-      };
-
-      // Step 6: Create data channel for structured events
-      this.dc = (this.pc as any).createDataChannel('oai-events');
-      this.setupDataChannel();
-
-      // Step 7: Create and set local SDP offer
-      const offer = await this.pc.createOffer({
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: false,
-      } as any);
-      await this.pc.setLocalDescription(offer as any);
-
-      // Step 8: Exchange SDP with OpenAI Realtime API
-      const sdpResponse = await fetch(
-        `${ENV.OPENAI_REALTIME_URL}?model=${this.config.model}&voice=${this.config.voice}`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${ENV.OPENAI_API_KEY}`,
-            'Content-Type': 'application/sdp',
-          },
-          body: (offer as any).sdp,
-        },
-      );
-
-      if (!sdpResponse.ok) {
-        const body = await sdpResponse.text();
-        throw new Error(`SDP exchange failed (${sdpResponse.status}): ${body}`);
-      }
-
-      // Step 9: Set remote SDP answer
-      const answerSdp = await sdpResponse.text();
-      await this.pc.setRemoteDescription({
-        type: 'answer',
-        sdp: answerSdp,
-      } as any);
-
-      this.setState('connected');
-      logger.info(TAG, 'WebRTC connection established with OpenAI Realtime API');
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       logger.error(TAG, 'Connection failed', err);
@@ -179,41 +168,46 @@ export class RealtimeAIClient implements IRealtimeAIClient {
     this.setState('disconnected');
   }
 
-  /**
-   * Send base64-encoded audio via DataChannel.
-   * This is the fallback path — primary path is the WebRTC audio track.
-   */
   sendAudio(audioData: string): void {
     if (this.state !== 'connected') return;
-
-    this.sendEvent({
-      type: 'input_audio_buffer.append',
-      audio: audioData,
+    this.sendJSON({
+      realtimeInput: {
+        mediaChunks: [
+          {
+            mimeType: 'audio/pcm;rate=16000',
+            data: audioData,
+          },
+        ],
+      },
     });
   }
 
   sendText(text: string): void {
     if (this.state !== 'connected') return;
-
-    this.sendEvent({
-      type: 'conversation.item.create',
-      item: {
-        type: 'message',
-        role: 'user',
-        content: [{type: 'input_text', text}],
+    this.sendJSON({
+      clientContent: {
+        turns: [
+          {
+            role: 'user',
+            parts: [{text}],
+          },
+        ],
+        turnComplete: true,
       },
     });
-
-    this.sendEvent({type: 'response.create'});
   }
 
   commitAudioBuffer(): void {
-    this.sendEvent({type: 'input_audio_buffer.commit'});
-    this.sendEvent({type: 'response.create'});
+    if (this.state !== 'connected') return;
+    this.sendJSON({
+      clientContent: {
+        turnComplete: true,
+      },
+    });
   }
 
   cancelResponse(): void {
-    this.sendEvent({type: 'response.cancel'});
+    logger.warn(TAG, 'Cancel not directly supported in Gemini Live API');
   }
 
   // --- Interaction mode ---
@@ -222,8 +216,13 @@ export class RealtimeAIClient implements IRealtimeAIClient {
     this.interactionMode = mode;
     logger.info(TAG, `Interaction mode: ${mode}`);
 
+    // If already connected, toggle streaming accordingly
     if (this.state === 'connected') {
-      this.sendSessionUpdate();
+      if (mode === 'auto_vad') {
+        this.startStreaming();
+      } else {
+        this.stopStreaming();
+      }
     }
   }
 
@@ -232,16 +231,17 @@ export class RealtimeAIClient implements IRealtimeAIClient {
   }
 
   startTalking(): void {
-    if (this.interactionMode !== 'push_to_talk') return;
-    this.unmuteLocalAudio();
-    logger.debug(TAG, 'PTT: started talking');
+    this.startStreaming();
+    logger.debug(TAG, 'Started talking');
   }
 
   stopTalking(): void {
-    if (this.interactionMode !== 'push_to_talk') return;
-    this.muteLocalAudio();
-    this.commitAudioBuffer();
-    logger.debug(TAG, 'PTT: stopped talking, committed buffer');
+    if (this.interactionMode === 'push_to_talk') {
+      this.stopStreaming();
+      this.commitAudioBuffer();
+      logger.debug(TAG, 'Stopped talking, committed buffer');
+    }
+    // In auto_vad mode, don't stop streaming — Gemini handles turn detection
   }
 
   // --- Listeners ---
@@ -271,14 +271,6 @@ export class RealtimeAIClient implements IRealtimeAIClient {
     return () => this.errorListeners.delete(callback);
   }
 
-  onRemoteStream(callback: RemoteStreamCallback): () => void {
-    this.remoteStreamListeners.add(callback);
-    if (this.remoteStream) {
-      callback(this.remoteStream);
-    }
-    return () => this.remoteStreamListeners.delete(callback);
-  }
-
   onAISpeakingStart(callback: VoidCallback): () => void {
     this.speakingStartListeners.add(callback);
     return () => this.speakingStartListeners.delete(callback);
@@ -293,188 +285,146 @@ export class RealtimeAIClient implements IRealtimeAIClient {
     return this.state;
   }
 
-  getLocalStream(): MediaStream | null {
-    return this.localStream;
-  }
-
-  getRemoteStream(): MediaStream | null {
-    return this.remoteStream;
-  }
-
   // --- Private ---
 
-  private setupDataChannel(): void {
-    if (!this.dc) return;
+  private initAudioCapture(): void {
+    if (this.audioInitialized) return;
 
-    this.dc.onopen = () => {
-      logger.info(TAG, 'Data channel opened');
-      this.sendSessionUpdate();
-    };
+    LiveAudioStream.init({
+      sampleRate: 16000,
+      channels: 1,
+      bitsPerSample: 16,
+      audioSource: 6, // VOICE_RECOGNITION
+      bufferSize: 4096,
+      wavFile: '', // not saving to file, streaming only
+    });
 
-    this.dc.onmessage = (event: any) => {
-      try {
-        const data = JSON.parse(event.data);
-        this.handleServerEvent(data);
-      } catch (error) {
-        logger.error(TAG, 'Failed to parse server event', error);
+    LiveAudioStream.on('data', (base64: string) => {
+      if (this.isStreaming && this.state === 'connected') {
+        this.sendAudio(base64);
       }
-    };
+    });
 
-    this.dc.onerror = (event: any) => {
-      logger.error(TAG, 'Data channel error', event);
-    };
-
-    this.dc.onclose = () => {
-      logger.info(TAG, 'Data channel closed');
-    };
+    this.audioInitialized = true;
+    logger.info(TAG, 'Audio capture initialized (16kHz, 16-bit, mono)');
   }
 
-  private handleServerEvent(event: Record<string, unknown>): void {
-    const type = event.type as string;
-
-    switch (type) {
-      case 'session.created':
-        logger.info(TAG, 'Session created by server');
-        break;
-
-      case 'session.updated':
-        logger.info(TAG, 'Session configuration updated');
-        break;
-
-      case 'input_audio_buffer.speech_started':
-        logger.debug(TAG, 'Server VAD: speech started');
-        break;
-
-      case 'input_audio_buffer.speech_stopped':
-        logger.debug(TAG, 'Server VAD: speech stopped');
-        break;
-
-      case 'response.audio.delta':
-        if (!this.isResponding) {
-          this.isResponding = true;
-          this.speakingStartListeners.forEach(cb => cb());
-        }
-        this.audioDeltaListeners.forEach(cb => cb(event.delta as string));
-        break;
-
-      case 'response.audio_transcript.delta':
-        this.transcriptListeners.forEach(cb => cb(event.delta as string, false));
-        break;
-
-      case 'response.audio_transcript.done':
-        this.transcriptListeners.forEach(cb => cb(event.transcript as string, true));
-        break;
-
-      case 'conversation.item.input_audio_transcription.completed':
-        this.messageListeners.forEach(cb =>
-          cb({
-            id: (event.item_id as string) ?? Date.now().toString(),
-            role: 'user',
-            content: event.transcript as string,
-            timestamp: Date.now(),
-          }),
-        );
-        break;
-
-      case 'response.done': {
-        if (this.isResponding) {
-          this.isResponding = false;
-          this.speakingEndListeners.forEach(cb => cb());
-        }
-        const response = event.response as Record<string, unknown>;
-        const output = (response?.output as Array<Record<string, unknown>>)?.[0];
-        if (output) {
-          const content = (output.content as Array<Record<string, unknown>>)?.[0];
-          if (content?.transcript) {
-            this.messageListeners.forEach(cb =>
-              cb({
-                id: (output.id as string) ?? Date.now().toString(),
-                role: 'assistant',
-                content: content.transcript as string,
-                timestamp: Date.now(),
-              }),
-            );
-          }
-        }
-        break;
-      }
-
-      case 'error':
-        this.errorListeners.forEach(cb =>
-          cb(new Error((event.error as Record<string, string>)?.message ?? 'Unknown error')),
-        );
-        break;
-
-      default:
-        logger.debug(TAG, `Unhandled event: ${type}`);
-    }
+  private startStreaming(): void {
+    if (this.isStreaming) return;
+    this.isStreaming = true;
+    LiveAudioStream.start();
+    logger.debug(TAG, 'Mic streaming started');
   }
 
-  private sendEvent(event: Record<string, unknown>): void {
-    if (this.dc?.readyState === 'open') {
-      this.dc.send(JSON.stringify(event));
-    }
+  private stopStreaming(): void {
+    if (!this.isStreaming) return;
+    this.isStreaming = false;
+    LiveAudioStream.stop();
+    logger.debug(TAG, 'Mic streaming stopped');
   }
 
-  private sendSessionUpdate(): void {
-    const turnDetection =
-      this.interactionMode === 'auto_vad'
-        ? {type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500}
-        : null;
-
-    this.sendEvent({
-      type: 'session.update',
-      session: {
-        instructions: this.config.instructions,
-        voice: this.config.voice,
-        input_audio_format: this.config.inputAudioFormat,
-        output_audio_format: this.config.outputAudioFormat,
-        input_audio_transcription: {model: 'whisper-1'},
-        turn_detection: turnDetection,
-        temperature: this.config.temperature,
-        max_response_output_tokens: this.config.maxTokens,
+  private sendSetup(): void {
+    this.sendJSON({
+      setup: {
+        model: `models/${this.config.model}`,
+        generationConfig: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: {
+                voiceName: this.config.voice,
+              },
+            },
+          },
+          temperature: this.config.temperature,
+          maxOutputTokens: this.config.maxTokens,
+        },
+        systemInstruction: {
+          parts: [{text: this.config.instructions}],
+        },
       },
     });
   }
 
-  private muteLocalAudio(): void {
-    if (!this.localStream) return;
-    const audioTracks = this.localStream.getAudioTracks();
-    for (const track of audioTracks) {
-      track.enabled = false;
-    }
-  }
+  private handleServerEvent(event: Record<string, unknown>): void {
+    const serverContent = event.serverContent as Record<string, unknown> | undefined;
 
-  private unmuteLocalAudio(): void {
-    if (!this.localStream) return;
-    const audioTracks = this.localStream.getAudioTracks();
-    for (const track of audioTracks) {
-      track.enabled = true;
-    }
-  }
+    if (serverContent) {
+      const modelTurn = serverContent.modelTurn as Record<string, unknown> | undefined;
 
-  private handleConnectionFailure(): void {
-    logger.error(TAG, 'ICE connection failed');
-    this.cleanup();
-    this.setState('error');
-    this.errorListeners.forEach(cb => cb(new Error('WebRTC connection failed')));
-  }
+      if (modelTurn?.parts) {
+        const parts = modelTurn.parts as Array<Record<string, unknown>>;
 
-  private cleanup(): void {
-    this.dc?.close();
-    this.pc?.close();
+        for (const part of parts) {
+          // Audio response from Gemini
+          const inlineData = part.inlineData as Record<string, string> | undefined;
+          if (inlineData?.data) {
+            if (!this.isResponding) {
+              this.isResponding = true;
+              this.speakingStartListeners.forEach(cb => cb());
+            }
+            this.audioDeltaListeners.forEach(cb => cb(inlineData.data));
+          }
 
-    if (this.localStream) {
-      const tracks = this.localStream.getTracks();
-      for (const track of tracks) {
-        track.stop();
+          // Text transcript from Gemini
+          if (typeof part.text === 'string') {
+            this.currentTranscript += part.text;
+            this.transcriptListeners.forEach(cb => cb(part.text as string, false));
+          }
+        }
+      }
+
+      // Turn complete — AI finished speaking
+      if (serverContent.turnComplete) {
+        if (this.isResponding) {
+          this.isResponding = false;
+          this.speakingEndListeners.forEach(cb => cb());
+        }
+
+        if (this.currentTranscript) {
+          // Send final transcript
+          this.transcriptListeners.forEach(cb => cb(this.currentTranscript, true));
+
+          // Add as conversation message
+          this.messageListeners.forEach(cb =>
+            cb({
+              id: Date.now().toString(),
+              role: 'assistant',
+              content: this.currentTranscript,
+              timestamp: Date.now(),
+            }),
+          );
+          this.currentTranscript = '';
+        }
       }
     }
 
-    this.dc = null;
-    this.pc = null;
-    this.localStream = null;
-    this.remoteStream = null;
+    // Handle errors from Gemini
+    if (event.error) {
+      const errorData = event.error as Record<string, unknown>;
+      const message = (errorData.message as string) ?? 'Unknown Gemini error';
+      logger.error(TAG, `Gemini error: ${message}`);
+      this.errorListeners.forEach(cb => cb(new Error(message)));
+    }
+  }
+
+  private sendJSON(data: Record<string, unknown>): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(data));
+    }
+  }
+
+  private cleanup(): void {
+    this.stopStreaming();
+
+    if (this.ws) {
+      this.ws.onclose = null; // prevent re-entry
+      this.ws.close();
+      this.ws = null;
+    }
+
+    this.currentTranscript = '';
+    this.isResponding = false;
   }
 
   private setState(newState: AIConnectionState): void {

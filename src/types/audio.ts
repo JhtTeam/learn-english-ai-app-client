@@ -44,10 +44,8 @@ export interface IAudioRecorderService {
 }
 
 export interface IAudioPlayerService {
-  /** Play base64-encoded PCM audio */
-  playChunk(audioData: string): void;
-  /** Play from a MediaStream (WebRTC remote track) */
-  attachStream(stream: MediaStream): void;
+  /** Speak text using TTS */
+  speak(text: string): void;
   stop(): void;
   setVolume(volume: number): void;
   getState(): AudioState;

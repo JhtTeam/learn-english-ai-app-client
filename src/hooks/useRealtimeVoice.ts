@@ -50,6 +50,10 @@ export function useRealtimeVoice() {
       realtimeAIClient.onMessage(message => {
         setStreamingTranscript('');
         addMessage(message);
+        // Speak assistant responses via TTS
+        if (message.role === 'assistant') {
+          audioPlayerService.speak(message.content);
+        }
       }),
     );
 
@@ -60,13 +64,6 @@ export function useRealtimeVoice() {
         } else {
           setStreamingTranscript(prev => prev + transcript);
         }
-      }),
-    );
-
-    unsubs.push(
-      realtimeAIClient.onRemoteStream(stream => {
-        logger.info(TAG, 'Routing remote audio to player');
-        audioPlayerService.attachStream(stream);
       }),
     );
 
